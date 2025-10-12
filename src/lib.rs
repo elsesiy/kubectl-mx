@@ -14,21 +14,22 @@ pub fn format_dry_run(ctxs: &[String], cmd: &[String]) -> String {
     if ctxs.is_empty() {
         "No contexts match the provided regex.".to_string()
     } else {
-        let mut output = format!("Found {} matching context(s):\n", ctxs.len());
+        let mut lines = vec![format!("Found {} matching context(s):", ctxs.len())];
         let max_display = 10;
         for (i, ctx) in ctxs.iter().enumerate() {
             if i >= max_display {
                 let remaining = ctxs.len() - max_display;
-                output.push_str(&format!("... and {} more\n", remaining));
+                lines.push(format!("... and {} more", remaining));
                 break;
             }
-            output.push_str(&format!("- {}\n", ctx));
+            lines.push(format!("- {}", ctx));
         }
-        output.push_str(&format!(
-            "\nCommand to execute: kubectl --context <context> {}",
+        lines.push("".to_string());
+        lines.push(format!(
+            "Command to execute: kubectl --context <context> {}",
             cmd.join(" ")
         ));
-        output
+        lines.join("\n")
     }
 }
 

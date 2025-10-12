@@ -52,9 +52,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = get_kubectl_contexts()?;
     let ctxs = get_matching_contexts(r_arg.clone(), &output)?;
 
-    let effective_args = var_args.to_vec();
-
     if matches.get_flag("dry_run") || ctxs.is_empty() {
+        let effective_args = var_args.to_vec();
         if json {
             let result = DryRunResult {
                 matching_contexts: ctxs,
@@ -107,19 +106,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Arc::new(Mutex::new(pb)))
     };
 
-    let results = if json {
-        Some(Arc::new(Mutex::new(Vec::<ExecutionResult>::new())))
-    } else {
-        None
-    };
-
+    let ctxs_len = ctxs.len();
     let mut tasks = vec![];
-    for c in ctxs.clone() {
-        let cmd_args = (*var_args).clone();
-        let var_args = Arc::new(cmd_args);
+    for c in ctxs {
+        let var_args = var_args.clone();
         let semaphore = semaphore.clone();
         let pb = pb.clone();
-        let results = results.clone();
         let c_clone = c.clone();
         let task = tokio::spawn(async move {
             let _permit = semaphore.acquire().await.unwrap();
@@ -187,9 +179,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(pb) = &pb {
                 pb.lock().unwrap().inc(1);
             }
-            if let Some(results) = &results {
-                results.lock().unwrap().push(exec_result.clone());
-            }
             exec_result
         });
         tasks.push(task);
@@ -216,7 +205,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let output = serde_json::json!({
             "results": all_results,
             "summary": {
-                "total": ctxs.len(),
+                "total": ctxs_len,
                 "succeeded": success_count,
                 "failed": failure_count,
                 "elapsed_seconds": elapsed.as_secs_f64()
