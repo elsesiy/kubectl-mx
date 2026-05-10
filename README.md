@@ -219,13 +219,13 @@ You can set defaults using environment variables:
 
 kubectl-mx also supports an optional TOML config file following the XDG Base Directory specification, located at `$XDG_CONFIG_HOME/kubectl-mx/config.toml` or `~/.config/kubectl-mx/config.toml` if `XDG_CONFIG_HOME` is not set.
 
-Config values are strings and parsed as numbers at runtime. Command-line args take precedence: `kubectl-mx --max-concurrency 5 ...` overrides env vars.
+Command-line args take precedence: `kubectl-mx --max-concurrency 5 ...` overrides both env vars and config file values.
 
 Example `~/.config/kubectl-mx/config.toml`:
 ```toml
-max_concurrency = "20"
-timeout = "60"
-retry = "2"
+max_concurrency = 20
+timeout = 60
+retry = 2
 ```
 
 ## How It Works

@@ -9,7 +9,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use kubectl_mx::{format_dry_run, get_kubectl_contexts, get_matching_contexts};
 use serde::Serialize;
 use std::process;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::time::{timeout, Duration};
 
@@ -31,7 +31,7 @@ struct ExecutionResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    config::load_config();
+    let cfg = config::Config::load();
     let matches = config::build_command().get_matches();
 
     let mut vargs: Vec<String> = matches
@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let json = matches.get_flag("json");
 
-    if json && !vargs.contains(&"-o".to_string()) && !vargs.contains(&"--output".to_string()) {
+    if json && !vargs.iter().any(|a| a == "-o" || a == "--output") {
         vargs.push("-o".to_string());
         vargs.push("json".to_string());
     }
@@ -50,18 +50,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let r_arg = matches.get_one::<String>("regex").unwrap();
     let output = get_kubectl_contexts()?;
-    let ctxs = get_matching_contexts(r_arg.clone(), &output)?;
+    let ctxs = get_matching_contexts(r_arg, &output)?;
 
     if matches.get_flag("dry_run") || ctxs.is_empty() {
-        let effective_args = var_args.to_vec();
         if json {
             let result = DryRunResult {
                 matching_contexts: ctxs,
-                command: format!("kubectl --context <context> {}", effective_args.join(" ")),
+                command: format!("kubectl --context <context> {}", var_args.join(" ")),
             };
-            println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            println!("{}", serde_json::to_string_pretty(&result)?);
         } else {
-            println!("{}", format_dry_run(&ctxs, &effective_args));
+            println!("{}", format_dry_run(&ctxs, &var_args));
         }
         process::exit(0);
     }
@@ -77,17 +76,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         process::exit(0);
     }
 
-    let max_concurrency: usize = matches
-        .get_one::<String>("max-concurrency")
-        .unwrap()
-        .parse()
-        .unwrap();
-    let timeout_secs: u64 = matches
-        .get_one::<String>("timeout")
-        .unwrap()
-        .parse()
-        .unwrap();
-    let retry_count: usize = matches.get_one::<String>("retry").unwrap().parse().unwrap();
+    let max_concurrency = cfg.max_concurrency(&matches);
+    let timeout_secs = cfg.timeout(&matches);
+    let retry_count = cfg.retry(&matches);
     let quiet = matches.get_flag("quiet");
     let start_time = std::time::Instant::now();
     let semaphore = Arc::new(Semaphore::new(max_concurrency));
@@ -103,20 +94,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .progress_chars("#>-"),
         );
         pb.set_draw_target(indicatif::ProgressDrawTarget::stderr());
-        Some(Arc::new(Mutex::new(pb)))
+        Some(pb)
     };
 
     let ctxs_len = ctxs.len();
-    let mut tasks = vec![];
+    let mut tasks = Vec::with_capacity(ctxs_len);
     for c in ctxs {
         let var_args = var_args.clone();
         let semaphore = semaphore.clone();
         let pb = pb.clone();
-        let c_clone = c.clone();
         let task = tokio::spawn(async move {
             let _permit = semaphore.acquire().await.unwrap();
             let mut exec_result = ExecutionResult {
-                context: c_clone,
+                context: c,
                 success: false,
                 output: None,
                 error: None,
@@ -126,7 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Duration::from_secs(timeout_secs),
                     tokio::process::Command::new("kubectl")
                         .arg("--context")
-                        .arg(&c)
+                        .arg(&exec_result.context)
                         .args(&*var_args)
                         .output(),
                 )
@@ -136,12 +126,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(Ok(output)) => {
                         if output.status.success() {
                             if !quiet && !json {
-                                println!("{}\n----------", c.green());
+                                println!("{}\n----------", exec_result.context.green());
                                 println!("{}", String::from_utf8_lossy(&output.stdout));
                             }
                             exec_result.success = true;
-                            exec_result.output =
-                                Some(String::from_utf8_lossy(&output.stdout).to_string());
+                            if json {
+                                exec_result.output =
+                                    Some(String::from_utf8_lossy(&output.stdout).to_string());
+                            }
                             Ok(())
                         } else {
                             Err(String::from_utf8_lossy(&output.stderr).to_string())
@@ -158,7 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if !json {
                                 eprintln!(
                                     "Error in context {} (attempt {}): {}",
-                                    c.red(),
+                                    exec_result.context.red(),
                                     attempt + 1,
                                     err
                                 );
@@ -167,7 +159,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             continue;
                         } else {
                             if !json {
-                                eprintln!("Error in context {}: {}", c.red(), err);
+                                eprintln!(
+                                    "Error in context {}: {}",
+                                    exec_result.context.red(),
+                                    err
+                                );
                             }
                             exec_result.error = Some(err);
                             break;
@@ -177,7 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if let Some(pb) = &pb {
-                pb.lock().unwrap().inc(1);
+                pb.inc(1);
             }
             exec_result
         });
@@ -186,7 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut success_count = 0;
     let mut failure_count = 0;
-    let mut all_results = Vec::new();
+    let mut all_results = Vec::with_capacity(ctxs_len);
     for task in tasks {
         let result = task.await.unwrap();
         if result.success {
@@ -198,7 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Some(pb) = pb {
-        pb.lock().unwrap().finish();
+        pb.finish();
     }
     let elapsed = start_time.elapsed();
     if json {
@@ -211,7 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "elapsed_seconds": elapsed.as_secs_f64()
             }
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         println!(
             "Completed: {} succeeded, {} failed in {:.2}s",
