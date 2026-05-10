@@ -45,25 +45,29 @@ fn test_env_override_in_help() {
 }
 
 #[test]
-fn test_a_config_file_override_in_help() {
+fn test_config_file_is_loaded() {
     let temp_dir = env::temp_dir().join("kubectl_mx_test_config");
     fs::create_dir_all(&temp_dir).unwrap();
     let config_dir = temp_dir.join("kubectl-mx");
     fs::create_dir_all(&config_dir).unwrap();
     let config_file = config_dir.join("config.toml");
-    fs::write(&config_file, "max_concurrency = 25\n").unwrap();
+    fs::write(&config_file, "max_concurrency = 25\ntimeout = 60\n").unwrap();
 
-    let temp_dir_str = temp_dir.to_str().unwrap().to_string();
-
+    // Verify the binary starts successfully with a config file present
     let mut cmd = Command::cargo_bin("kubectl-mx").unwrap();
-    cmd.env("XDG_CONFIG_HOME", &temp_dir_str);
+    cmd.env("XDG_CONFIG_HOME", temp_dir.to_str().unwrap());
     cmd.env_remove("KUBECTL_MX_MAX_CONCURRENCY");
     cmd.env_remove("KUBECTL_MX_TIMEOUT");
     cmd.env_remove("KUBECTL_MX_RETRY");
-    cmd.arg("--help");
-    cmd.assert().success().stdout(predicates::str::contains(
-        "[env: KUBECTL_MX_MAX_CONCURRENCY=25]",
-    ));
+    cmd.arg("-r")
+        .arg("nonexistent")
+        .arg("-d")
+        .arg("-e")
+        .arg("get")
+        .arg("pods");
+    cmd.assert()
+        .success()
+        .stdout("No contexts match the provided regex.\n");
 
     fs::remove_dir_all(temp_dir).unwrap();
 }

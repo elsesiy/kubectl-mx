@@ -1,32 +1,53 @@
-use clap::{Arg, Command as ClapCommand};
+use clap::{Arg, ArgMatches, Command as ClapCommand};
+use serde::Deserialize;
 use std::env;
 use std::fs;
 use std::path::Path;
 
-pub fn load_config() {
-    let config_dir = env::var("XDG_CONFIG_HOME")
-        .unwrap_or_else(|_| env::var("HOME").unwrap_or_else(|_| ".".to_string()) + "/.config");
-    let config_path = Path::new(&config_dir)
-        .join("kubectl-mx")
-        .join("config.toml");
-    if let Ok(cfg_str) = fs::read_to_string(config_path) {
-        if let Ok(cfg) = toml::from_str::<toml::Value>(&cfg_str) {
-            if let Some(v) = cfg.get("max_concurrency") {
-                if env::var("KUBECTL_MX_MAX_CONCURRENCY").is_err() {
-                    env::set_var("KUBECTL_MX_MAX_CONCURRENCY", v.to_string());
-                }
-            }
-            if let Some(v) = cfg.get("timeout") {
-                if env::var("KUBECTL_MX_TIMEOUT").is_err() {
-                    env::set_var("KUBECTL_MX_TIMEOUT", v.to_string());
-                }
-            }
-            if let Some(v) = cfg.get("retry") {
-                if env::var("KUBECTL_MX_RETRY").is_err() {
-                    env::set_var("KUBECTL_MX_RETRY", v.to_string());
-                }
-            }
+#[derive(Deserialize, Default)]
+pub struct Config {
+    pub max_concurrency: Option<usize>,
+    pub timeout: Option<u64>,
+    pub retry: Option<usize>,
+}
+
+impl Config {
+    pub fn load() -> Self {
+        let config_dir = env::var("XDG_CONFIG_HOME")
+            .unwrap_or_else(|_| env::var("HOME").unwrap_or_else(|_| ".".to_string()) + "/.config");
+        let config_path = Path::new(&config_dir)
+            .join("kubectl-mx")
+            .join("config.toml");
+
+        fs::read_to_string(config_path)
+            .ok()
+            .and_then(|s| toml::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    /// Returns the effective max_concurrency value, considering CLI > env > config > default.
+    pub fn max_concurrency(&self, matches: &ArgMatches) -> usize {
+        if matches.value_source("max-concurrency") != Some(clap::parser::ValueSource::DefaultValue)
+        {
+            return *matches.get_one::<usize>("max-concurrency").unwrap();
         }
+        self.max_concurrency.unwrap_or(10)
+    }
+
+    /// Returns the effective timeout value, considering CLI > env > config > default.
+    pub fn timeout(&self, matches: &ArgMatches) -> u64 {
+        if matches.value_source("timeout") != Some(clap::parser::ValueSource::DefaultValue) {
+            return *matches.get_one::<u64>("timeout").unwrap();
+        }
+        self.timeout.unwrap_or(30)
+    }
+
+    /// Returns the effective retry value, considering CLI > env > config > default.
+    pub fn retry(&self, matches: &ArgMatches) -> usize {
+        if matches.value_source("retry") != Some(clap::parser::ValueSource::DefaultValue) {
+            return *matches.get_one::<usize>("retry").unwrap();
+        }
+        self.retry.unwrap_or(0)
     }
 }
 
@@ -67,6 +88,7 @@ pub fn build_command() -> ClapCommand {
                 .help("Maximum number of concurrent kubectl commands")
                 .value_name("N")
                 .env("KUBECTL_MX_MAX_CONCURRENCY")
+                .value_parser(clap::value_parser!(usize))
                 .default_value("10"),
         )
         .arg(
@@ -75,6 +97,7 @@ pub fn build_command() -> ClapCommand {
                 .help("Timeout for each kubectl command in seconds")
                 .value_name("SECONDS")
                 .env("KUBECTL_MX_TIMEOUT")
+                .value_parser(clap::value_parser!(u64))
                 .default_value("30"),
         )
         .arg(
@@ -83,6 +106,7 @@ pub fn build_command() -> ClapCommand {
                 .help("Number of retries for failed commands")
                 .value_name("N")
                 .env("KUBECTL_MX_RETRY")
+                .value_parser(clap::value_parser!(usize))
                 .default_value("0"),
         )
         .arg(

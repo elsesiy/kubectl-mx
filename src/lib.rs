@@ -3,13 +3,6 @@
 use regex::Regex;
 
 /// Formats the dry-run output showing matching contexts and command template.
-///
-/// # Arguments
-/// * `ctxs` - Slice of matching context names
-/// * `cmd` - Slice of command arguments
-///
-/// # Returns
-/// A formatted string for dry-run output
 pub fn format_dry_run(ctxs: &[String], cmd: &[String]) -> String {
     if ctxs.is_empty() {
         "No contexts match the provided regex.".to_string()
@@ -34,9 +27,6 @@ pub fn format_dry_run(ctxs: &[String], cmd: &[String]) -> String {
 }
 
 /// Retrieves all available kubectl contexts.
-///
-/// # Returns
-/// A Result containing a string with newline-separated context names, or an error
 pub fn get_kubectl_contexts() -> Result<String, Box<dyn std::error::Error>> {
     let proc_output = std::process::Command::new("kubectl")
         .arg("config")
@@ -57,18 +47,11 @@ pub fn get_kubectl_contexts() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 /// Filters kubectl contexts using a regex pattern.
-///
-/// # Arguments
-/// * `regex` - The regex pattern to match against context names
-/// * `output` - The output from kubectl config get-contexts -o name
-///
-/// # Returns
-/// A Result containing a vector of matching context names, or an error
 pub fn get_matching_contexts(
-    regex: String,
+    regex: &str,
     output: &str,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let re = Regex::new(&regex).unwrap();
+    let re = Regex::new(regex)?;
 
     let filtered_contexts: Vec<String> = output
         .lines()
@@ -88,14 +71,14 @@ mod tests {
         let mock_output = "context1\ncontext2-prod\ncontext3-dev\ncontext4-prod";
 
         // Test regex that matches prod contexts
-        let result = get_matching_contexts("prod".to_string(), mock_output).unwrap();
+        let result = get_matching_contexts("prod", mock_output).unwrap();
         assert_eq!(
             result,
             vec!["context2-prod".to_string(), "context4-prod".to_string()]
         );
 
         // Test regex that matches all
-        let result = get_matching_contexts("context".to_string(), mock_output).unwrap();
+        let result = get_matching_contexts("context", mock_output).unwrap();
         assert_eq!(
             result,
             vec![
@@ -107,7 +90,7 @@ mod tests {
         );
 
         // Test regex that matches none
-        let result = get_matching_contexts("nonexistent".to_string(), mock_output).unwrap();
+        let result = get_matching_contexts("nonexistent", mock_output).unwrap();
         assert_eq!(result, Vec::<String>::new());
     }
 
