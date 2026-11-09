@@ -4,14 +4,14 @@
 //! that match a given regex pattern, with parallel execution for efficiency.
 
 use colored::Colorize;
-use dialoguer::{theme::ColorfulTheme, Confirm};
+use dialoguer::{Confirm, theme::ColorfulTheme};
 use indicatif::{ProgressBar, ProgressStyle};
 use kubectl_mx::{format_dry_run, get_kubectl_contexts, get_matching_contexts};
 use serde::Serialize;
 use std::process;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 mod config;
 

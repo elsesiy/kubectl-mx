@@ -2,7 +2,7 @@
 name = "kubectl-mx"
 version = "0.1.0"
 authors = ["Jonas-Taha El Sesiy"]
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 clap = { version = "4.6", features = ["derive", "env"] }
