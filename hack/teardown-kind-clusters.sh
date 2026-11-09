@@ -7,9 +7,9 @@ set -e
 echo "Deleting test kind clusters..."
 
 # Delete clusters if they exist
-clusters=("kind-test1" "kind-test2" "kind-test3")
+clusters=("mx-test1" "mx-test2" "mx-test3")
 for cluster in "${clusters[@]}"; do
-    if kind get clusters | grep -q "$cluster"; then
+    if kind get clusters | grep -qxF "$cluster"; then
         echo "Deleting $cluster..."
         kind delete cluster --name "$cluster"
     else

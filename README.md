@@ -192,7 +192,7 @@ The project includes integration tests that require real Kubernetes clusters. To
    make teardown-clusters
    ```
 
-The setup creates 3 kind clusters (`kind-test1`, `kind-test2`, `kind-test3`) for testing multi-context functionality.
+The setup creates 3 kind clusters (`mx-test1`, `mx-test2`, `mx-test3`) for testing multi-context functionality.
 
 ## Troubleshooting
 

@@ -1,8 +1,11 @@
 #!/bin/bash
 
-# Setup script to create 3 kind clusters for integration testing
+# Setup script to create 3 kind clusters for integration testing.
+# Idempotent: clusters that already exist are kept, so it is safe in CI and locally.
 
-set -e
+set -euo pipefail
+
+clusters=("mx-test1" "mx-test2" "mx-test3")
 
 # Check if kind is installed
 if ! command -v kind &> /dev/null; then
@@ -11,30 +14,20 @@ if ! command -v kind &> /dev/null; then
     exit 1
 fi
 
-# Check if clusters already exist
 existing_clusters=$(kind get clusters 2>/dev/null || true)
-if echo "$existing_clusters" | grep -q "kind-test1\|kind-test2\|kind-test3"; then
-    echo "Some test clusters already exist. Please run teardown script first or delete manually."
-    exit 1
-fi
 
-echo "Creating kind clusters for testing..."
+for cluster in "${clusters[@]}"; do
+    if grep -qxF "$cluster" <<< "$existing_clusters"; then
+        echo "$cluster already exists, skipping..."
+    else
+        echo "Creating $cluster..."
+        kind create cluster --name "$cluster" --wait 120s
+    fi
+done
 
-# Create cluster 1
-echo "Creating kind-test1..."
-kind create cluster --name kind-test1 --wait 60s
-
-# Create cluster 2
-echo "Creating kind-test2..."
-kind create cluster --name kind-test2 --wait 60s
-
-# Create cluster 3
-echo "Creating kind-test3..."
-kind create cluster --name kind-test3 --wait 60s
-
-echo "All clusters created successfully!"
+echo "All clusters are ready!"
 echo "Available contexts:"
-kubectl config get-contexts -o name | grep kind-test
+kubectl config get-contexts -o name | grep kind-mx-test
 
 echo ""
 echo "To run integration tests:"

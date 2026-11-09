@@ -10,7 +10,7 @@ To set up 3 kind clusters for integration testing:
 ./hack/setup-kind-clusters.sh
 ```
 
-This will create clusters named `kind-test1`, `kind-test2`, and `kind-test3`.
+This will create clusters named `mx-test1`, `mx-test2`, and `mx-test3`.
 
 ## Teardown Kind Clusters
 

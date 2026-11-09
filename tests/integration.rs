@@ -76,7 +76,7 @@ fn test_config_file_is_loaded() {
 fn test_dry_run_with_matches() {
     let mut cmd = Command::cargo_bin("kubectl-mx").unwrap();
     cmd.arg("-r")
-        .arg("kind-.*")
+        .arg("kind-mx-test.*")
         .arg("-d")
         .arg("-e")
         .arg("get")
