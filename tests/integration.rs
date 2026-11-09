@@ -85,3 +85,46 @@ fn test_dry_run_with_matches() {
         .success()
         .stdout(predicates::str::contains("Found 3 matching context(s)"));
 }
+
+#[test]
+fn test_exit_code_nonzero_when_kubectl_fails() {
+    let mut cmd = Command::cargo_bin("kubectl-mx").unwrap();
+    cmd.args([
+        "-r",
+        "kind-mx-test.*",
+        "-q",
+        "-e",
+        "get",
+        "nonexistent-resource",
+    ]);
+    cmd.assert()
+        .failure()
+        .stdout(predicates::str::contains("0 succeeded"));
+}
+
+#[test]
+fn test_exit_code_zero_when_kubectl_succeeds() {
+    let mut cmd = Command::cargo_bin("kubectl-mx").unwrap();
+    cmd.args(["-r", "kind-mx-test.*", "-q", "-e", "get", "namespaces"]);
+    cmd.assert()
+        .success()
+        .stdout(predicates::str::contains("0 failed"));
+}
+
+#[test]
+fn test_zero_max_concurrency_is_rejected() {
+    let mut cmd = Command::cargo_bin("kubectl-mx").unwrap();
+    cmd.args(["-r", ".*", "--max-concurrency", "0", "-e", "get", "pods"]);
+    cmd.assert()
+        .code(2)
+        .stderr(predicates::str::contains("must be at least 1"));
+}
+
+#[test]
+fn test_no_match_without_dry_run_fails() {
+    let mut cmd = Command::cargo_bin("kubectl-mx").unwrap();
+    cmd.args(["-r", "nonexistent", "-e", "get", "pods"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicates::str::contains("No contexts match"));
+}

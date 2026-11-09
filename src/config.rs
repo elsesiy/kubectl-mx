@@ -19,10 +19,18 @@ impl Config {
             .join("kubectl-mx")
             .join("config.toml");
 
-        fs::read_to_string(config_path)
-            .ok()
-            .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default()
+        // A missing file is normal, but a file we cannot parse would silently drop the user's settings.
+        let Ok(contents) = fs::read_to_string(&config_path) else {
+            return Self::default();
+        };
+        toml::from_str(&contents).unwrap_or_else(|e| {
+            eprintln!(
+                "Warning: ignoring invalid config {}: {}",
+                config_path.display(),
+                e
+            );
+            Self::default()
+        })
     }
 
     /// Returns the effective max_concurrency value, considering CLI > env > config > default.
@@ -76,7 +84,7 @@ pub fn build_command() -> ClapCommand {
             Arg::new("exec")
                 .short('e')
                 .long("exec")
-                .help("kubectl command to execute against matching clusters")
+                .help("kubectl command to execute against matching clusters; everything after -e is passed to kubectl, so put kubectl-mx options before it")
                 .allow_hyphen_values(true)
                 .value_name("CMD")
                 .required(true)
@@ -119,7 +127,7 @@ pub fn build_command() -> ClapCommand {
         .arg(
             Arg::new("json")
                 .long("json")
-                .help("Output results in JSON format")
+                .help("Output results in JSON format; pass -o json to kubectl if you want its output as JSON")
                 .action(clap::ArgAction::SetTrue),
         )
 }

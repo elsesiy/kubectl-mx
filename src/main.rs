@@ -8,7 +8,8 @@ use dialoguer::{Confirm, theme::ColorfulTheme};
 use indicatif::{ProgressBar, ProgressStyle};
 use kubectl_mx::{format_dry_run, get_kubectl_contexts, get_matching_contexts};
 use serde::Serialize;
-use std::process;
+use std::io::{IsTerminal, Write};
+use std::process::ExitCode;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::time::{Duration, timeout};
@@ -26,59 +27,92 @@ struct ExecutionResult {
     context: String,
     success: bool,
     output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stderr: Option<String>,
     error: Option<String>,
 }
 
+/// Writes a line to stdout or stderr without corrupting the progress bar.
+///
+/// Write errors (such as a closed pipe from `| head`) are ignored on purpose: aborting would
+/// leave a mutating command applied to only some of the contexts.
+fn emit(pb: &Option<ProgressBar>, to_stderr: bool, msg: &str) {
+    let write = || {
+        if to_stderr {
+            let _ = writeln!(std::io::stderr(), "{msg}");
+        } else {
+            let _ = writeln!(std::io::stdout(), "{msg}");
+        }
+    };
+    match pb {
+        Some(pb) => pb.suspend(write),
+        None => write(),
+    }
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let cfg = config::Config::load();
     let matches = config::build_command().get_matches();
 
-    let mut vargs: Vec<String> = matches
-        .get_many::<String>("exec")
-        .map(|m| m.cloned().collect())
-        .unwrap_or_default();
+    let var_args: Arc<Vec<String>> = Arc::new(
+        matches
+            .get_many::<String>("exec")
+            .map(|m| m.cloned().collect())
+            .unwrap_or_default(),
+    );
 
     let json = matches.get_flag("json");
 
-    if json && !vargs.iter().any(|a| a == "-o" || a == "--output") {
-        vargs.push("-o".to_string());
-        vargs.push("json".to_string());
+    let max_concurrency = cfg.max_concurrency(&matches);
+    let timeout_secs = cfg.timeout(&matches);
+    let retry_count = cfg.retry(&matches);
+    // A zero permit semaphore never grants a permit and a zero timeout fails every command.
+    if max_concurrency == 0 || timeout_secs == 0 {
+        emit(
+            &None,
+            true,
+            "max-concurrency and timeout must be at least 1",
+        );
+        return Ok(ExitCode::from(2));
     }
-
-    let var_args = Arc::new(vargs);
 
     let r_arg = matches.get_one::<String>("regex").unwrap();
     let output = get_kubectl_contexts()?;
     let ctxs = get_matching_contexts(r_arg, &output)?;
 
     if matches.get_flag("dry_run") || ctxs.is_empty() {
+        // Nothing ran although the user asked for execution, so scripts must see a failure.
+        let no_match = ctxs.is_empty() && !matches.get_flag("dry_run");
         if json {
             let result = DryRunResult {
                 matching_contexts: ctxs,
                 command: format!("kubectl --context <context> {}", var_args.join(" ")),
             };
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            emit(&None, false, &serde_json::to_string_pretty(&result)?);
         } else {
-            println!("{}", format_dry_run(&ctxs, &var_args));
+            emit(&None, no_match, &format_dry_run(&ctxs, &var_args));
         }
-        process::exit(0);
+        return Ok(if no_match {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        });
     }
 
+    // Without a terminal nobody can answer the prompt, so run like --json does.
+    let interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     if !json
+        && interactive
         && ctxs.len() > 20
         && !Confirm::with_theme(&ColorfulTheme::default())
             .with_prompt(format!("Found {} matching contexts. Proceed?", ctxs.len()))
             .default(true)
-            .interact()
-            .unwrap()
+            .interact()?
     {
-        process::exit(0);
+        return Ok(ExitCode::SUCCESS);
     }
 
-    let max_concurrency = cfg.max_concurrency(&matches);
-    let timeout_secs = cfg.timeout(&matches);
-    let retry_count = cfg.retry(&matches);
     let quiet = matches.get_flag("quiet");
     let start_time = std::time::Instant::now();
     let semaphore = Arc::new(Semaphore::new(max_concurrency));
@@ -109,6 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 context: c,
                 success: false,
                 output: None,
+                stderr: None,
                 error: None,
             };
             for attempt in 0..=retry_count {
@@ -118,6 +153,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .arg("--context")
                         .arg(&exec_result.context)
                         .args(&*var_args)
+                        // Dropping the future on timeout must not leave kubectl running.
+                        .kill_on_drop(true)
                         .output(),
                 )
                 .await;
@@ -125,14 +162,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let attempt_result = match out {
                     Ok(Ok(output)) => {
                         if output.status.success() {
-                            if !quiet && !json {
-                                println!("{}\n----------", exec_result.context.green());
-                                println!("{}", String::from_utf8_lossy(&output.stdout));
-                            }
+                            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
                             exec_result.success = true;
                             if json {
-                                exec_result.output =
-                                    Some(String::from_utf8_lossy(&output.stdout).to_string());
+                                exec_result.output = Some(stdout);
+                                exec_result.stderr = (!stderr.is_empty()).then_some(stderr);
+                            } else if !quiet {
+                                // One print call so output of concurrent contexts cannot interleave.
+                                emit(
+                                    &pb,
+                                    false,
+                                    &format!(
+                                        "{}\n----------\n{}",
+                                        exec_result.context.green(),
+                                        stdout
+                                    ),
+                                );
+                                if !stderr.is_empty() {
+                                    emit(
+                                        &pb,
+                                        true,
+                                        &format!(
+                                            "{}: {}",
+                                            exec_result.context.yellow(),
+                                            stderr.trim_end()
+                                        ),
+                                    );
+                                }
                             }
                             Ok(())
                         } else {
@@ -148,21 +205,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(err) => {
                         if attempt < retry_count {
                             if !json {
-                                eprintln!(
-                                    "Error in context {} (attempt {}): {}",
-                                    exec_result.context.red(),
-                                    attempt + 1,
-                                    err
+                                emit(
+                                    &pb,
+                                    true,
+                                    &format!(
+                                        "Error in context {} (attempt {}): {}",
+                                        exec_result.context.red(),
+                                        attempt + 1,
+                                        err
+                                    ),
                                 );
                             }
                             tokio::time::sleep(Duration::from_secs(1)).await;
                             continue;
                         } else {
                             if !json {
-                                eprintln!(
-                                    "Error in context {}: {}",
-                                    exec_result.context.red(),
-                                    err
+                                emit(
+                                    &pb,
+                                    true,
+                                    &format!(
+                                        "Error in context {}: {}",
+                                        exec_result.context.red(),
+                                        err
+                                    ),
                                 );
                             }
                             exec_result.error = Some(err);
@@ -207,15 +272,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "elapsed_seconds": elapsed.as_secs_f64()
             }
         });
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        emit(&None, false, &serde_json::to_string_pretty(&output)?);
     } else {
-        println!(
-            "Completed: {} succeeded, {} failed in {:.2}s",
-            success_count.to_string().green(),
-            failure_count.to_string().red(),
-            elapsed.as_secs_f64()
+        emit(
+            &None,
+            false,
+            &format!(
+                "Completed: {} succeeded, {} failed in {:.2}s",
+                success_count.to_string().green(),
+                failure_count.to_string().red(),
+                elapsed.as_secs_f64()
+            ),
         );
     }
 
-    Ok(())
+    Ok(if failure_count > 0 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
 }
