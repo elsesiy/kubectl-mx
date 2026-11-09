@@ -62,21 +62,25 @@ kubectl-mx allows you to run kubectl commands on multiple contexts simultaneousl
 ### Basic Syntax
 
 ```bash
-kubectl-mx -r <regex> -e <kubectl_command> [command_args...]
+kubectl-mx [options] -r <regex> -e <kubectl_command> [command_args...]
 ```
+
+Put all kubectl-mx options before `-e`. Everything after `-e` is passed to kubectl unchanged.
+
+The exit code is `0` if the command succeeded in every matching context. It is `1` if it failed in at least one context or if no context matched the regex (unless `-d` is used). It is `2` for invalid option values.
 
 The regex supports full regular expression syntax (e.g., `prod.*`, `cluster-[0-9]+`).
 
 ### Options
 
 - `-r, --regex <REGEX>`: Regular expression to match kubectl context names. Required.
-- `-e, --exec <CMD>...`: The kubectl command and arguments to execute. Required.
+- `-e, --exec <CMD>...`: The kubectl command and arguments to execute. Required. Must be the last option.
 - `-d, --dry-run`: Preview matching contexts and commands without execution. Shows a preview and exits early.
 - `--max-concurrency <N>`: Maximum number of concurrent kubectl commands (env: `KUBECTL_MX_MAX_CONCURRENCY`, default: 10).
 - `--timeout <SECONDS>`: Timeout for each kubectl command in seconds (env: `KUBECTL_MX_TIMEOUT`, default: 30).
 - `--retry <N>`: Number of retries for failed commands (with 1-second delay between attempts; env: `KUBECTL_MX_RETRY`, default: 0).
 - `-q, --quiet`: Suppress kubectl output, only show progress and summary.
-- `--json`: Output results in JSON format. Automatically adds `-o json` to kubectl commands if not already specified. Output includes a results array (with context, success, output/error) and a summary (total, succeeded, failed, elapsed time).
+- `--json`: Output results in JSON format. Output includes a results array (with context, success, output, stderr if any, error) and a summary (total, succeeded, failed, elapsed time). kubectl-mx does not change the kubectl command, so add `-o json` yourself for commands that support it.
 - `-h, --help`: Display help information.
 - `-V, --version`: Display version information.
 
@@ -105,43 +109,43 @@ The regex supports full regular expression syntax (e.g., `prod.*`, `cluster-[0-9
 
 4. **Dry run to see which contexts would be affected:**
    ```bash
-   kubectl-mx -r "dev" -e get nodes -d
+   kubectl-mx -r "dev" -d -e get nodes
    ```
    This will output the matching contexts and the command that would be run.
 
 5. **Output results in JSON format:**
    ```bash
-   kubectl-mx --json -r "prod" -e get pods
+   kubectl-mx --json -r "prod" -e get pods -o json
    ```
-   This will output the results as JSON (kubectl commands automatically get `-o json` added), making it easy to process with tools like jq.
+   This will output the results as JSON, making it easy to process with tools like jq. The `output` field holds the raw kubectl output as a string.
 
 6. **Process JSON output with jq:**
    ```bash
-   kubectl-mx --json -r "prod" -e get pods | jq '.results[] | select(.success) | .output'
+   kubectl-mx --json -r "prod" -e get pods -o json | jq '.results[] | select(.success) | .output | fromjson'
    ```
    Filters successful results and extracts kubectl output.
 
 7. **Run with limited concurrency:**
    ```bash
-   kubectl-mx -r ".*" -e get pods --max-concurrency 5
+   kubectl-mx -r ".*" --max-concurrency 5 -e get pods
    ```
    This limits concurrent commands to 5, useful for large numbers of contexts.
 
 8. **Run with custom timeout:**
    ```bash
-   kubectl-mx -r "prod" -e get nodes --timeout 60
+   kubectl-mx -r "prod" --timeout 60 -e get nodes
    ```
    Sets a 60-second timeout per command.
 
 9. **Run with retries:**
    ```bash
-   kubectl-mx -r "staging" -e apply -f config.yaml --retry 3
+   kubectl-mx -r "staging" --retry 3 -e apply -f config.yaml
    ```
    Retries failed commands up to 3 times with a 1-second delay.
 
 10. **Run in quiet mode:**
     ```bash
-    kubectl-mx -r ".*" -e get pods -q
+    kubectl-mx -r ".*" -q -e get pods
     ```
     Suppresses kubectl output, showing only progress and final summary with timing.
 
@@ -197,10 +201,10 @@ The setup creates 3 kind clusters (`mx-test1`, `mx-test2`, `mx-test3`) for testi
 ## Troubleshooting
 
 ### Common Issues
-- **No contexts match the regex**: Verify your regex with `kubectl config get-contexts`. Use `kubectl-mx -r ".*" -d` to see all contexts.
+- **No contexts match the regex**: Verify your regex with `kubectl config get-contexts`. Use `kubectl-mx -r ".*" -d -e get pods` to see all contexts. If nothing matches, kubectl-mx exits with code 1.
 - **kubectl not found**: Ensure kubectl is installed and in your PATH.
 - **Permission denied on contexts**: Check that your kubeconfig has access to the contexts (e.g., via `kubectl --context <name> get pods`).
-- **Large number of contexts**: For >20 matches, kubectl-mx prompts for confirmation; use `--json` to skip or adjust your regex.
+- **Large number of contexts**: For >20 matches, kubectl-mx prompts for confirmation. The prompt is skipped with `--json` or when there is no terminal. Adjust your regex to match fewer contexts.
 - **Timeouts or failures**: Increase `--timeout` or check network/connectivity for the affected contexts.
 
 ## Configuration
@@ -232,7 +236,7 @@ retry = 2
 
 1. kubectl-mx fetches all available kubectl contexts.
 2. It filters contexts using the provided regex.
-3. For >20 matching contexts, prompts for confirmation (unless in JSON mode) to prevent unintended bulk operations.
+3. For >20 matching contexts, prompts for confirmation (unless in JSON mode or without a terminal) to prevent unintended bulk operations.
 4. For each matching context, it runs the specified kubectl command in parallel (controlled by a semaphore for concurrency).
 5. Commands are timed out per the configured limit, with retries on failure (1-second delay between attempts).
 6. Output is collected asynchronously per context and displayed with context names for easy identification.
